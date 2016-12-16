@@ -4,4 +4,6 @@
 
 [MySQL数据库系列](http://blog.csdn.net/column/details/mysqlchx.html)
 
+[系统存储] (http://blog.csdn.net/column/details/12844.html)
+
 
