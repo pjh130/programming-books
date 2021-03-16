@@ -1,0 +1,162 @@
+概念
+不要被一些招聘信息中的内容给忽悠了，分区是mysql支持的一种功能机制，而分表则是工程师通过对mysql基本功能的使用来实现的一种数据存储方式。
+
+分区与分表是两个相似却又不同的概念。
+
+在mysql里其实是没有分表这个概念的，分表代表的是工程师的一种人为化处理，即某个表的数据实在太多了（每天都会产生百万数据量），那工程师可能就会考虑分表来进行操作（例如按照时间，例如1天创建1个表或1月创建1个表），这样创建出来的表，它们的表结构是一样的，只是存储的数据不同。从广义上来讲，可以认为是一个表的内容，但是每个表是独立的个体，每个表都有自己的表元数据文件（.frm）和表空间文件（.ibd）（默认示例说明使用innodb引擎，正常来讲，除非你有特别明确的要求要使用myisam，否则建议使用innodb）。
+
+而分区是mysql内部实现的一种机制，进行了分区操作的表简称为分区表，分区通过关键字partition by来进行。分区表是将1个表的内容，按照某种指定的分区规则进行划分后，就可以将相关的内容存放在一起，从而使对数据表的操作能够更有效率。分区表是mysql的一种内部实现，在逻辑上它就是1个表（只有1个.frm文件），只是按照不同的分区规则，可能会有多个表空间文件(.ibd)用来存放不同分区的数据。
+
+分区表原理
+分区表是一个独立的逻辑表，但是底层由多个物理子表组成（数据存放在物理子表中）。
+
+分区表的调用实现在底层已经实现了封装，所以对于SQL来讲，它就是透明的，你操作的是这个表，但通过底层的各种优化和处理之后，操作针对的就会变成这个表的某个分区（物理子表）。
+
+mysql实现分区表的方式是通过对底层表的封装，所以索引也是按照分区的子表定义的，而没有全局索引。
+
+在创建表时，使用“partition by”子句来定义每个分区存放的数据。而在执行查询时，mysql优化器会根据分区定义来排除那些没有相关数据的分区，这样查询只需要扫描有限的几个包含所需数据的分区即可，缩小了查询扫描的范围。
+
+分区表的适用与优势
+表非常大以至于无法全部都放在内存中，或者只在表的最后部分有热点数据，其它的都是历史数据；
+分区表的数据更容易维护（想批量删除数据可以使用清除整个分区的方式，还可以对一个独立分区进行优化、检查、修复等操作）；
+分区表的数据可以分布在不同的物理设备上；
+可以使用分区表来避免某些特殊的瓶颈，如innodb单个索引的互斥访问、ext3文件系统的inode锁竞争等；
+可以备份和恢复独立的分区。
+分区表的限制
+一个表最多只能有1024个分区；
+分区表达式必须是整数，或是返回整数的表达式，当然也可以直接使用列来分区;
+分区的字段必须是主键或唯一索引；
+分区表中无法使用外键约束。
+分区表的操作逻辑
+select查询
+
+当查询一个分区表时，分区层先打开并锁住所有的底层表，优化器判断是否可以过滤竞价分区，然后调用对应的存储引擎接口访问各个分区的数据。
+
+innodb会在分区层释放对应的表锁，这个加锁与解锁的过程与普通的查询类似。
+
+insert操作
+
+当写入一条记录时，分区层先打开并锁住所有的底层表，然后确定哪个分区接收这条记录，再将记录写入对应底层表。
+
+delete操作
+
+当删除一条记录时，分区层先打开并锁住所有的底层表，然后确定数据对应的分区，最后对相应底层表进行删除操作。
+
+update操作
+
+当更新一条记录时，分区层先打开并锁住所有的底层表，先确定需要更新的记录在哪个分区，然后取出数据并更新，再判断更新后的数据应该放在哪个分区，最后对底层表进行写入操作，并对原数据所在的底层表进行删除操作。
+
+支持的分区类型
+mysql支持range、hash、key、list、composite多种分区方式，比较常用的有两种，分别是range范围划分方式和hash哈希计算划分方式。
+
+分区表达式可以是列，也可以是包含列的表达式。分区子句中可以使用各种函数，但分区表达式返回的值需要是一个确定的整数，且不能是一个常数。
+
+创建分区表
+使用range对日期进行划分来创建一个分区表test_partition
+
+create table test_partition( 
+    id int not null auto_increment, 
+    name varchar(16) default '', 
+    birth datetime, 
+    primary key(id,birth) 
+)engine=innodb default charset=utf8 partition by range(year(birth))( 
+    partition p_2016 values less than (2016), 
+    partition p_2017 values less than (2017), 
+    partition p_2018 values less than (2018), 
+    partition p_catchall values less than maxvalue);
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+我们可以看一下test_partition表创建成功后的表文件是怎样的：
+
+# ls -l
+total 1180
+-rw-r----- 1 mysql mysql    65 Nov  2 11:37 db.opt
+-rw-r----- 1 mysql mysql  8618 Nov 21 10:20 test_partition.frm
+-rw-r----- 1 mysql mysql 98304 Nov 21 10:20 test_partition#P#p_2016.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 10:24 test_partition#P#p_2017.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 10:20 test_partition#P#p_2018.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 10:20 test_partition#P#p_catchall.ibd
+1
+2
+3
+4
+5
+6
+7
+8
+是的，就像前面介绍的那样，分区表有1个总的表元数据文件（.frm），有多个表空间文件（.ibd，使用#进行了分隔标识）。
+
+子分区
+mysql分区表的分区还支持子分区模式，即对分区表中的分区进行再分区。
+
+我们使用test_partition来创建一个包含子分区的分区表test_subpartition
+
+create table test_subpartition( 
+    id int not null auto_increment, 
+    name varchar(16) default '', 
+    birth datetime, 
+    primary key(id,birth) 
+)engine=innodb default charset=utf8 partition by rangenge(year(birth)) subpartition by hash(id) subpartitions 2 ( 
+    partition p_2016 values less than (2016), 
+    partition p_2017 values less than (2017), 
+    partition p_2018 values less than (2018), 
+    partition p_catchall values less than maxvalue);
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+我们来看一下这个包含了子分区的分区表test_subpartition的表文件是怎样的：
+
+# ls -l
+total 1180
+-rw-r----- 1 mysql mysql    65 Nov  2 11:37 db.opt
+-rw-r----- 1 mysql mysql  8618 Nov 21 14:27 test_subpartition.frm
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2016#SP#p_2016sp0.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2016#SP#p_2016sp1.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2017#SP#p_2017sp0.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2017#SP#p_2017sp1.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2018#SP#p_2018sp0.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_2018#SP#p_2018sp1.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_catchall#SP#p_catchallsp0.ibd
+-rw-r----- 1 mysql mysql 98304 Nov 21 14:27 test_subpartition#P#p_catchall#SP#p_catchallsp1.ibd
+1
+2
+3
+4
+5
+6
+7
+8
+9
+10
+11
+12
+是的，每个分区（p_2016、p_2017、p_2018和p_catchall）的表空间文件（.idb）又被划分成了两个名为sp0、sp1的子表空间文件。
+
+特殊情况
+假设表有一个自增的主键列id，希望根据时间将最近的热点数据集中存放。那么根据时间分区就必须将时间戳包含在主键中才行，而这和主键本身的意义相矛盾。
+
+这种情况下可以使用这种方式（id div 1000000），div是执行整除运算，这样将100万数据划分一个分区，既实现了分区的目的，也避免了使用时间范围分区在超过阀值后需要新增分区的问题。
+
+分区表的查询优化
+对于分区表来说，在where条件中带入分区列，可以让优化器过滤掉无需访问的分区，所以有时即使看似多余也应该带上分区列，否则存储引擎便可能会访问这个表的所有分区，若表非常大，速度就会很慢。
+
+使用“explain partition”可以观察优化器是否执行了分区过滤。
+
+需要注意的是mysql只能在使用分区函数的列本身进行比较时才能过滤分区，而不能根据表达式的值去过滤分区，即使这个表达式就是分区函数也不行。
+
+所以即便在创建分区时可以使用表达式，但在查询时却只能根据列来过滤分区。
