@@ -1,0 +1,137 @@
+方法一:对sqlite中的数据进行加密
+
+对数据库中插入的字段内容先进行AES、MD5等加密后在插入到数据库中，在使用时先从数据库中取出数据，然后在解密在使用这种方式好是好，但是有些致命的问题不能绕过，如果要对某个字段进行模糊查询操作，那么该字段就不能加密，否则的话你不能对该字段进行模糊查询操作；这样一来该字段还是要暴漏出来，别人还是能看到一些东西的
+
+方法二: 利用SQLCipher开源框架
+使用第三方库的开源库，SQLCipher这个开源框架不错,SQLCipher是一个在SQLite基础之上进行扩展的开源数据库,关于这个库的使用请看我的另一篇文章使用SQLCipher对数据库加密
+
+
+一.概述
+SQLCipher是一个在SQLite基础之上进行扩展的开源数据库，它主要是在SQLite的基础之上增加了数据加密功能，如果我们在项目中使用它来存储数据的话，就可以大大提高程序的安全性。SQLCipher支持很多种不同的平台，这里我们要学习的自然是Android中SQLCipher的用法了。官网的地址如下： 
+https://www.zetetic.net/sqlcipher/ 
+SQLCipher采用的是256位AES加密，这是一种对称加密算法，具体是如何实现不在本文的讨论范围之内。
+
+二.使用
+接下来我们看看如何使用SQLCipher,首先要下载工具包，地址如下： 
+https://s3.amazonaws.com/sqlcipher/SQLCipher+for+Android+v2.2.2.zip 
+下载好之后，我们解压，会看到assets和lib两个文件夹，我们把这两个文件夹放到项目目录下覆盖， 
+
+
+然后把三个jar包添加一下依赖，并且新建一个jniLibs目录，把so文件放进去 
+ 
+环境搭建好了，接下来我们写代码
+
+三.代码
+1.DBHelper.java
+
+public class DBHelper extends SQLiteOpenHelper {
+    public DBHelper(Context context) {
+        super(context, "person.db", null, 1);
+    }
+ 
+    @Override
+    public void onCreate(SQLiteDatabase sqLiteDatabase) {
+        sqLiteDatabase.execSQL("create table student(ID INTEGER PRIMARY KEY AUTOINCREMENT" +
+                ",name varchar(10),age integer)");
+    }
+    @Override
+    public void onUpgrade(SQLiteDatabase sqLiteDatabase, int i, int i1) {
+ 
+    }
+}
+这里我们创建数据库person.db,然后在onCreate方法中创建表student, 
+注意这里要继承的是net.sqlcipher.database.SQLiteOpenHelper，而不是android自带的。
+
+2.DBOperator.java
+
+public class DBOperator {
+    private static DBOperator mInstance;
+    private DBHelper mHelper;
+    private static SQLiteDatabase database;
+    public DBOperator(Context context){
+        mHelper = new DBHelper(context);
+        database = mHelper.getWritableDatabase("abcd");
+    }
+    /**
+     * 单例模式获取对象
+     * @param context
+     * @return
+     */
+    public static DBOperator getInstance(Context context){
+        if(mInstance == null){
+            mInstance = new DBOperator(context);
+        }
+        return mInstance;
+    }
+    /**
+     * 插入数据到student表
+     * @param name 姓名
+     * @param age 年龄
+     */
+    public static void insert(String name,int age){
+        ContentValues values = new ContentValues();
+        values.put("name",name);
+        values.put("age",age);
+        database.insert("student",null,values);
+    }
+    /**
+     * 查询数据库中的所有数据
+     */
+    public void query(){
+        Cursor c = database.query("student", null, null, null, null, null, null);
+        if(c!=null){
+            while(c.moveToNext()){
+                String name = c.getString(c.getColumnIndex("name"));
+                int age = c.getInt(c.getColumnIndex("age"));
+                System.out.println("===========name: "+name);
+                System.out.println("===========age: "+age);
+            }
+        }
+    }
+}
+这是个对数据库进行操作的类，里面我们为了演示方便，定义了两个比较简单的方法，添加数据和查询数据，唯一不同的是当我们调用getWritableDatabase这个方法获取数据库对象时，传入了一个字符串类型的参数，这个参数就代表加密的密码。
+
+3。MainActivity.java
+
+public class MainActivity extends AppCompatActivity {
+    private DBOperator instance;
+    @Override
+    protected void onCreate(Bundle savedInstanceState) {
+        super.onCreate(savedInstanceState);
+        SQLiteDatabase.loadLibs(this);
+        setContentView(R.layout.activity_main);
+        instance = DBOperator.getInstance(this);
+    }
+    public void click(View view){
+        switch (view.getId()){
+            case R.id.add:
+                instance.insert("lxn",10);
+                break;
+            case R.id.query:
+                instance.query();
+                break;
+        }
+    }
+}
+接下来我们看运行效果图： 
+
+
+同时我们在控制台输出查询的结果： 
+
+
+可以看出，数据已经正确插入了。 
+那么SqliteCipher是如何保证数据的安全性呢？接下来我们来验证一下。
+
+四.安全性验证
+接下来我们通过两种方式来验证数据的安全性 
+1.命令行 我们通过sqlite3命令来查看数据库的结构 
+
+
+我们进入到数据库所在的目录，然后使用.schema命令查看创建数据库时的语句，我们可以看到，已经提示出了错误信息，文件损坏或者不是数据库。 
+2.通过可视化工具 
+这里我们通过Sqlite Expert这个专业的数据库工具来查看数据库结构，首先我们要将生成的数据库文件导出来。 
+
+
+然后我们通过工具打开
+
+这里报了和上面一样的错。
